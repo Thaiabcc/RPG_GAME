@@ -1,1 +1,40 @@
+# Unity
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
 
+# Visual Studio
+*.csproj
+*.unityproj
+*.sln
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.user
+*.suo
+*.pdb
+*.mdb
+
+# Rider / JetBrains
+/.idea/
+*.sln.iml
+
+# Hệ thống
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# File tạm
+*.tmp
+*.log
+*.cache
+*.bak
+*.backup
+*.old
+*.orig
