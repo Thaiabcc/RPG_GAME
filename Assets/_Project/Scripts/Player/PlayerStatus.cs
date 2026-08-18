@@ -94,6 +94,8 @@ namespace Player
                     anim.SetTrigger("Hurt");
                 }
             }
+            var player = GetComponent<SideScrollPlayer>();
+            if (player != null && player.IsDashing) return;
         }
 
         public void Heal(float amount)
@@ -123,5 +125,37 @@ namespace Player
                 CurrentStamina = Mathf.Min(maxStamina, CurrentStamina + staminaRegenRate * Time.deltaTime);
             }
         }
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        [Header("Debug")]
+        [SerializeField] private bool showDebugInfo = true;
+
+        void OnGUI()
+        {
+            if (!showDebugInfo) return;
+
+            GUIStyle style = new GUIStyle();
+            style.fontSize = 18;
+            style.normal.textColor = Color.white;
+            style.fontStyle = FontStyle.Bold;
+
+            float x = 20f;
+            float y = 20f;
+            float lineHeight = 26f;
+
+            GUI.Label(new Rect(x, y, 400, lineHeight), $"HP: {CurrentHealth:F0} / {maxHealth}", style);
+            y += lineHeight;
+
+            GUI.Label(new Rect(x, y, 400, lineHeight), $"Stamina: {CurrentStamina:F0} / {maxStamina}", style);
+            y += lineHeight;
+
+            GUI.Label(new Rect(x, y, 400, lineHeight), $"Shadow Energy: {CurrentShadowEnergy} / {maxShadowEnergy}", style);
+            y += lineHeight;
+
+            GUI.Label(new Rect(x, y, 400, lineHeight), $"Charge: {currentChargePercent:F1}%", style);
+            y += lineHeight;
+
+            GUI.Label(new Rect(x, y, 400, lineHeight), $"IsDead: {IsDead}", style);
+        }
+#endif
     }
 }

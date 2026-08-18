@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using UnityEngine;
 using Combat;
 using Player;
+using CameraSystem;
+
 namespace Enemy
 {
     public enum EnemyState
@@ -18,17 +20,17 @@ namespace Enemy
     [RequireComponent(typeof(Rigidbody2D), typeof(Animator))]
     public class EnemyController : MonoBehaviour, IDamageable
     {
-        [Header("Current State")] [SerializeField]
-        private EnemyState currentState = EnemyState.Patrol;
+        [Header("Current State")]
+        [SerializeField] private EnemyState currentState = EnemyState.Patrol;
 
-        [Header("Stats")] [SerializeField] private float maxHealth = 300f;
+        [Header("Stats")]
+        [SerializeField] private float maxHealth = 300f;
         [SerializeField] private bool isDummy = false;
         private float currentHealth;
         public bool IsDead => currentHealth <= 0 && !isDummy;
 
-        [Header("Movement & Patrol")] [SerializeField]
-        private float moveSpeed = 3f;
-
+        [Header("Movement & Patrol")]
+        [SerializeField] private float moveSpeed = 3f;
         [SerializeField] private float chaseSpeed = 5f;
         [SerializeField] private Transform groundCheck;
         [SerializeField] private Transform wallCheck;
@@ -36,26 +38,23 @@ namespace Enemy
         [SerializeField] private float wallCheckRadius = 0.1f;
         [SerializeField] private LayerMask groundLayer;
 
-        [Header("Smart AI & Evasion")] [SerializeField]
-        private float detectRadius = 8f;
-
+        [Header("Smart AI & Evasion")]
+        [SerializeField] private float detectRadius = 8f;
         [SerializeField] private float attackRange = 1.6f;
         [SerializeField] private float evadeForceX = 7f;
         [SerializeField] private float evadeForceY = 6f;
         [SerializeField] private float evadeCooldown = 2.5f;
         [Range(0f, 1f)] [SerializeField] private float blockChance = 0.35f;
 
-        [Header("Combat Settings")] [SerializeField]
-        private Transform attackPoint;
-
+        [Header("Combat Settings")]
+        [SerializeField] private Transform attackPoint;
         [SerializeField] private float attackHitboxRadius = 1.2f;
         [SerializeField] private float attackDamage = 15f;
         [SerializeField] private LayerMask targetLayer;
         [SerializeField] private float attackCooldown = 1.2f;
 
-        [Header("Hit Feedback")] [SerializeField]
-        private float knockbackForce = 4f;
-
+        [Header("Hit Feedback")]
+        [SerializeField] private float knockbackForce = 2f; 
         [SerializeField] private Color hitColor = new Color(1f, 0.4f, 0.4f, 1f);
         [SerializeField] private Color blockColor = new Color(0.4f, 0.8f, 1f, 1f);
 
@@ -84,6 +83,12 @@ namespace Enemy
         {
             if (IsDead) return;
 
+            if (isDummy)
+            {
+                anim.SetBool("IsWalking", false);
+                return;
+            }
+
             if (stateTimer > 0f)
             {
                 stateTimer -= Time.deltaTime;
@@ -96,7 +101,7 @@ namespace Enemy
 
         void FixedUpdate()
         {
-            if (IsDead || stateTimer > 0f) return;
+            if (IsDead || isDummy || stateTimer > 0f) return;
 
             switch (currentState)
             {
@@ -114,20 +119,38 @@ namespace Enemy
         private void EvaluateTarget()
         {
             Collider2D[] targets = Physics2D.OverlapCircleAll(transform.position, detectRadius, targetLayer);
-            Transform closest = null;
+    
+            Transform bestTarget = null;
+            int bestPriority = int.MaxValue;
             float minDistance = Mathf.Infinity;
 
             foreach (var col in targets)
             {
-                float dist = Vector2.Distance(transform.position, col.transform.position);
-                if (dist < minDistance)
+                int currentPriority = 99; 
+
+                if (col.CompareTag("Player"))
                 {
+                    currentPriority = 1;
+                }
+                else if (col.CompareTag("Shadow")) 
+                {
+                    currentPriority = 2; 
+                }
+                else
+                {
+                    continue; 
+                }
+
+                float dist = Vector2.Distance(transform.position, col.transform.position);
+                if (currentPriority < bestPriority || (currentPriority == bestPriority && dist < minDistance))
+                {
+                    bestPriority = currentPriority;
                     minDistance = dist;
-                    closest = col.transform;
+                    bestTarget = col.transform;
                 }
             }
 
-            currentTarget = closest;
+            currentTarget = bestTarget;
         }
 
         private void HandleFSM()
@@ -207,7 +230,7 @@ namespace Enemy
 
         private void TriggerEvade(Vector2 sourcePosition)
         {
-            if (Time.time < nextEvadeTime) return;
+            if (isDummy || Time.time < nextEvadeTime) return;
 
             currentState = EnemyState.Evade;
             nextEvadeTime = Time.time + evadeCooldown;
@@ -225,30 +248,31 @@ namespace Enemy
         public void TakeDamage(float damage)
         {
             if (IsDead) return;
-
-            if (Random.value < blockChance && currentState != EnemyState.Evade)
+            if (!isDummy && Random.value < blockChance && currentState != EnemyState.Evade)
             {
                 float reducedDamage = damage * 0.2f;
                 currentHealth = Mathf.Max(0, currentHealth - reducedDamage);
-                Debug.Log($"<color=cyan>[BLOCKED]:</color> Quái chặn đòn! Nhận {reducedDamage} HP (Giảm 80%)");
 
                 StartCoroutine(FlashRoutine(blockColor));
                 if (currentTarget != null) TriggerEvade(currentTarget.position);
                 return;
             }
-
             currentHealth = Mathf.Max(0, currentHealth - damage);
-            Debug.Log(
-                $"<color=yellow>[HIT]:</color> {gameObject.name} trúng đòn -{damage} HP | Còn: <color=red>{currentHealth}/{maxHealth}</color>");
-
-            if (currentTarget != null)
+            if (currentTarget != null && !isDummy)
             {
-                float hitDir = Mathf.Sign(transform.position.x - currentTarget.position.x);
-                rb.linearVelocity = new Vector2(hitDir * knockbackForce, 2f);
+                Combat.Knockback.Apply(rb, currentTarget.position, knockbackForce, 1.5f);
                 stateTimer = 0.15f;
+            }
+            if (CameraShake.Instance != null)
+            {
+                CameraShake.Instance.Shake(0.08f, 0.1f);
             }
 
             StartCoroutine(FlashRoutine(hitColor));
+            if (isDummy && currentHealth <= 0)
+            {
+                currentHealth = maxHealth;
+            }
 
             if (IsDead)
             {
@@ -257,7 +281,8 @@ namespace Enemy
             else
             {
                 anim.SetTrigger("Hurt");
-                if (currentTarget != null && Vector2.Distance(transform.position, currentTarget.position) < 1.5f)
+                
+                if (!isDummy && currentTarget != null && Vector2.Distance(transform.position, currentTarget.position) < 1.5f)
                 {
                     TriggerEvade(currentTarget.position);
                 }
@@ -266,7 +291,7 @@ namespace Enemy
 
         public void TriggerAttackHitbox()
         {
-            if (attackPoint == null) return;
+            if (attackPoint == null || isDummy) return;
 
             Collider2D[] hits = Physics2D.OverlapCircleAll(attackPoint.position, attackHitboxRadius, targetLayer);
             foreach (Collider2D hit in hits)
