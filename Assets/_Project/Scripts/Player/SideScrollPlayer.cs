@@ -1,29 +1,24 @@
 using UnityEngine;
 using Combat;
 using PlayerReplay;
+using CameraSystem;
+using System.Collections;
 
 namespace Player
 {
     public enum PlayerState
     {
-        Idle,
-        Walking,
-        Running,
-        Dashing,
-        Jumping,
-        Falling,
-        Attacking,
-        Dead
+        Idle, Walking, Running, Dashing, Jumping, Falling, Attacking, Dead, Knockback
     }
 
     [RequireComponent(typeof(Rigidbody2D), typeof(Animator), typeof(PlayerStatus))]
-    public class SideScrollPlayer : MonoBehaviour
+    public class SideScrollPlayer : MonoBehaviour, IDamageable
     {
-        [Header("State Management")] 
+        [Header("State Management")]
         [SerializeField] private PlayerState currentState = PlayerState.Idle;
         public PlayerState CurrentState => currentState;
 
-        [Header("Movement Progression (Walk -> Run -> Dash)")] 
+        [Header("Movement Progression (Walk -> Run -> Dash)")]
         [SerializeField] private float walkSpeed = 5f;
         [SerializeField] private float runSpeed = 9f;
         [SerializeField] private float dashSpeed = 28f;
@@ -31,7 +26,7 @@ namespace Player
         [SerializeField] private float dashCooldown = 0.6f;
         [SerializeField] private float dashStaminaCost = 25f;
 
-        [Header("Hollow Knight Jump Feel")] 
+        [Header("Jump")]
         [SerializeField] private float jumpForce = 14f;
         [SerializeField] private float jumpStaminaCost = 10f;
         [SerializeField] private float fallMultiplier = 3f;
@@ -42,14 +37,14 @@ namespace Player
         [SerializeField] private float jumpApexThreshold = 1.5f;
         [SerializeField] private float jumpApexHangTime = 0.5f;
 
-        [Header("Attack & Hitbox Settings")] 
+        [Header("Attack & Hitbox Settings")]
         [SerializeField] private float attackCooldown = 0.35f;
         [SerializeField] private float pogoForce = 12f;
         [SerializeField] private Transform attackPoint;
         [SerializeField] private float attackRange = 0.8f;
         [SerializeField] private LayerMask enemyLayer;
 
-        [Header("Attack Damage & Stamina Costs")] 
+        [Header("Attack Damage & Stamina Costs")]
         [SerializeField] private float attack1Damage = 20f;
         [SerializeField] private float attack1Cost = 15f;
         [SerializeField] private float attack2Damage = 35f;
@@ -58,13 +53,28 @@ namespace Player
         [SerializeField] private float attack3Cost = 40f;
         [SerializeField] private float runStaminaCost = 10f;
 
-        [Header("Ground Check Settings")] 
+        [Header("Ground Check Settings")]
         [SerializeField] private Transform groundCheck;
         [SerializeField] private float groundCheckRadius = 0.2f;
         [SerializeField] private LayerMask groundLayer;
 
-        [Header("Input Buffer Settings")] 
+        [Header("Input Buffer Settings")]
         [SerializeField] private float attackBufferTime = 0.15f;
+
+        [Header("Dash Layer Settings")]
+        [SerializeField] private string dashLayerName = "PlayerDash";
+
+        [Header("Combat Feedback Settings")]
+        [SerializeField] private float knockbackHorizontalForce = 7f; 
+        [SerializeField] private float knockbackVerticalForce = 12f;   
+        
+        [Header("Damage Settings")]
+        [SerializeField] private float contactDamage = 6f; 
+
+        [Header("Invincibility Settings (I-Frames)")]
+        [SerializeField] private float invincibilityDuration = 1.0f; 
+        private bool isInvincible = false;
+
         private float attackBufferCounter = 0f;
         private int bufferedAttackType = 0;
 
@@ -81,6 +91,9 @@ namespace Player
         private float nextDashTime = 0f;
         private float dashDirection = 1f;
 
+        private int normalLayer;
+        private int dashLayer;
+
         private Rigidbody2D rb;
         private Animator anim;
         private PlayerStatus status;
@@ -93,7 +106,12 @@ namespace Player
         private float jumpBufferCounter;
         private float nextAttackTime = 0f;
         private float attackTimer = 0f;
+        private bool isKnockedBack = false; 
+
         private PlayerReplayManager replayManager;
+
+        public bool IsDashing => dashTimer > 0f;
+        public bool IsKnockedBack => isKnockedBack;
 
         void Start()
         {
@@ -104,12 +122,21 @@ namespace Player
             replayManager = FindObjectOfType<PlayerReplayManager>();
 
             rb.interpolation = RigidbodyInterpolation2D.Interpolate;
+
+            normalLayer = gameObject.layer;
+            dashLayer = LayerMask.NameToLayer(dashLayerName);
+
+            if (dashLayer == -1)
+            {
+                Debug.LogWarning("Error");
+            }
+
             ChangeState(PlayerState.Idle);
         }
 
         void Update()
         {
-            if (status.IsDead) return;
+            if (status.IsDead || isKnockedBack) return;
 
             attack1ExecutedThisFrame = false;
             attack2ExecutedThisFrame = false;
@@ -160,20 +187,24 @@ namespace Player
 
         void FixedUpdate()
         {
-            if (status.IsDead) return;
-
             CheckGrounded();
+
+            if (status.IsDead || isKnockedBack) return;
 
             if (dashTimer > 0f)
             {
                 dashTimer -= Time.fixedDeltaTime;
                 rb.linearVelocity = new Vector2(dashDirection * dashSpeed, 0f);
+
+                if (dashTimer <= 0f)
+                {
+                    EndDash();
+                }
                 return;
             }
 
             bool hasMoveInput = Mathf.Abs(activeInput.moveX) > 0.01f;
-            bool canRun = activeInput.isRunning && status.HasEnoughStamina(runStaminaCost * Time.fixedDeltaTime) &&
-                          hasMoveInput;
+            bool canRun = activeInput.isRunning && status.HasEnoughStamina(runStaminaCost * Time.fixedDeltaTime) && hasMoveInput;
             float currentSpeed = canRun ? runSpeed : walkSpeed;
 
             if (canRun)
@@ -189,20 +220,111 @@ namespace Player
         {
             if (activeInput.dashPressed && Time.time >= nextDashTime && status.UseStamina(dashStaminaCost))
             {
-                dashTimer = dashDuration;
-                nextDashTime = Time.time + dashCooldown;
-                dashDirection = Mathf.Abs(activeInput.moveX) > 0.01f
-                    ? Mathf.Sign(activeInput.moveX)
-                    : (isFacingRight ? 1f : -1f);
-
-                anim.SetTrigger("Dash");
-                ChangeState(PlayerState.Dashing);
-                dashExecutedThisFrame = true;
+                StartDash();
             }
         }
 
-        #region Attack & Damage Execution
+        private void StartDash()
+        {
+            dashTimer = dashDuration;
+            nextDashTime = Time.time + dashCooldown;
+            dashDirection = Mathf.Abs(activeInput.moveX) > 0.01f ? Mathf.Sign(activeInput.moveX) : (isFacingRight ? 1f : -1f);
 
+            if (dashLayer != -1)
+            {
+                gameObject.layer = dashLayer;
+            }
+
+            anim.SetTrigger("Dash");
+            ChangeState(PlayerState.Dashing);
+            dashExecutedThisFrame = true;
+        }
+
+        private void EndDash()
+        {
+            dashTimer = 0f;
+            gameObject.layer = normalLayer;
+        }
+
+        #region Physics Collision
+
+        private void OnCollisionEnter2D(Collision2D collision)
+        {
+            if (collision.gameObject.CompareTag("Enemy") || collision.gameObject.layer == LayerMask.NameToLayer("Enemy"))
+            {
+                Vector2 enemyPosition = collision.transform.position;
+                TakeDamage(contactDamage, enemyPosition);
+            }
+        }
+
+        #endregion
+
+        #region IDamageable Implementation
+
+        public void TakeDamage(float damage)
+        {
+            Vector2 defaultEnemyPos = (Vector2)transform.position + (isFacingRight ? Vector2.right : Vector2.left);
+            TakeDamage(damage, defaultEnemyPos);
+        }
+
+        public void TakeDamage(float damage, Vector2 enemyPosition)
+        {
+            if (status.IsDead || IsDashing || isKnockedBack || isInvincible) return;
+
+            status.TakeDamage(damage);
+
+            if (CameraShake.Instance != null)
+            {
+                CameraShake.Instance.Shake(0.1f, 0.12f);
+            }
+
+            StartCoroutine(BouncyKnockbackRoutine(enemyPosition));
+        }
+
+        private IEnumerator BouncyKnockbackRoutine(Vector2 enemyPosition)
+        {
+            isKnockedBack = true;
+            isInvincible = true; 
+            ChangeState(PlayerState.Knockback);
+
+            anim.SetBool("IsKnockedBack", true);
+            float knockbackDir = transform.position.x < enemyPosition.x ? -1f : 1f;
+            anim.SetTrigger("KnockbackLying");
+            rb.linearVelocity = new Vector2(knockbackDir * knockbackHorizontalForce, knockbackVerticalForce);
+            float airTime = 0f;
+            while (airTime < 0.15f)
+            {
+                airTime += Time.deltaTime;
+                yield return null;
+            }
+            float maxKnockbackDuration = 1.5f;
+            float timer = 0f;
+            while (!isGrounded && timer < maxKnockbackDuration)
+            {
+                timer += Time.deltaTime;
+                yield return null;
+            }
+            rb.linearVelocity = new Vector2(0f, rb.linearVelocity.y);
+            yield return new WaitForSeconds(0.4f);
+            isKnockedBack = false;
+            anim.SetBool("IsKnockedBack", false);
+            float elapsed = 0f;
+            SpriteRenderer sr = GetComponent<SpriteRenderer>();
+
+            while (elapsed < invincibilityDuration)
+            {
+                if (sr != null) sr.enabled = !sr.enabled;
+                yield return new WaitForSeconds(0.12f);
+                elapsed += 0.12f;
+            }
+
+            if (sr != null) sr.enabled = true;
+            isInvincible = false;
+        }
+
+        #endregion
+
+        #region Attack & Damage Execution
         private void UpdateAttackBuffer()
         {
             if (activeInput.attack1Pressed)
@@ -246,7 +368,6 @@ namespace Player
                     {
                         anim.SetTrigger("Attack1");
                     }
-
                     attack1ExecutedThisFrame = true;
                 });
                 attackBufferCounter = 0f;
@@ -300,19 +421,15 @@ namespace Player
                 }
             }
         }
-
         #endregion
 
         #region Debug & Controls
-
         private void HandleDebugKeyboardTests()
         {
             if (Input.GetKeyDown(KeyCode.H))
             {
-                status.TakeDamage(20f);
-                if (!status.IsDead) anim.SetTrigger("Hurt");
+                TakeDamage(20f); 
             }
-
             if (Input.GetKeyDown(KeyCode.R))
             {
                 status.Heal(30f);
@@ -335,7 +452,6 @@ namespace Player
                     anim.SetBool("IsDead", true);
                     rb.linearVelocity = new Vector2(0, rb.linearVelocity.y);
                 }
-
                 return;
             }
 
@@ -357,8 +473,7 @@ namespace Player
             if (Mathf.Abs(activeInput.moveX) > 0.01f)
             {
                 ChangeState(activeInput.isRunning && status.HasEnoughStamina(runStaminaCost * Time.deltaTime)
-                    ? PlayerState.Running
-                    : PlayerState.Walking);
+                    ? PlayerState.Running : PlayerState.Walking);
             }
             else
             {
@@ -420,8 +535,7 @@ namespace Player
 
         private void CheckGrounded()
         {
-            isGrounded = groundCheck != null &&
-                         Physics2D.OverlapCircle(groundCheck.position, groundCheckRadius, groundLayer);
+            isGrounded = groundCheck != null && Physics2D.OverlapCircle(groundCheck.position, groundCheckRadius, groundLayer);
         }
 
         private void UpdateAnimatorSpeed()
@@ -449,10 +563,8 @@ namespace Player
                 scale.x = isFacingRight ? Mathf.Abs(scale.x) : -Mathf.Abs(scale.x);
                 transform.localScale = scale;
             }
-
             anim.SetBool("IsFacingRight", isFacingRight);
         }
-
         #endregion
 
         private void OnDrawGizmosSelected()
@@ -462,7 +574,6 @@ namespace Player
                 Gizmos.color = Color.red;
                 Gizmos.DrawWireSphere(groundCheck.position, groundCheckRadius);
             }
-
             if (attackPoint != null)
             {
                 Gizmos.color = Color.yellow;

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using Combat;
 using PlayerReplay;
+using CameraSystem;
 
 namespace Player
 {
@@ -25,6 +26,7 @@ namespace Player
         [Range(0f, 1f)]
         [SerializeField] private float damageTransferRatio = 0.5f;
         [SerializeField] private Color hitColor = new Color(1f, 0.3f, 0.3f, 0.7f);
+        [SerializeField] private float shadowKnockbackForce = 1f; // Lực văng nhẹ riêng cho bóng
 
         [Header("Movement Progression")]
         [SerializeField] private float walkSpeed = 5f;
@@ -51,7 +53,13 @@ namespace Player
         [SerializeField] private Transform groundCheck;
         [SerializeField] private float groundCheckRadius = 0.2f;
         [SerializeField] private LayerMask groundLayer;
+        
+        [Header("Dash Layer Settings")]
+        [SerializeField] private string dashLayerName = "PlayerDash";
 
+        private int normalLayer;
+        private int dashLayer;
+        
         private Rigidbody2D rb;
         private Animator anim;
         private SpriteRenderer sr;
@@ -61,6 +69,7 @@ namespace Player
         private bool isGrounded;
         private bool isFacingRight = true;
         private bool isFallingToAnchor = false;
+        private bool mirrorMode = false;
 
         private bool hasStartedReplay = false;
         private float firstActionTime = -1f;
@@ -82,6 +91,14 @@ namespace Player
             rb = GetComponent<Rigidbody2D>();
             anim = GetComponent<Animator>();
             sr = GetComponent<SpriteRenderer>();
+            normalLayer = gameObject.layer;
+            dashLayer = LayerMask.NameToLayer(dashLayerName);
+
+            if (dashLayer == -1)
+            {
+                Debug.LogWarning("Error.");
+            }
+
             replayManager = FindObjectOfType<PlayerReplayManager>();
 
             if (sr != null) originalColor = sr.color;
@@ -158,6 +175,18 @@ namespace Player
                 return;
             }
 
+            if (dashTimer > 0f)
+            {
+                dashTimer -= Time.fixedDeltaTime;
+                rb.linearVelocity = new Vector2(dashDirection * dashSpeed, 0f);
+
+                if (dashTimer <= 0f)
+                {
+                    gameObject.layer = normalLayer;
+                }
+                return;
+            }
+
             if (replayManager == null) return;
 
             if (!hasStartedReplay)
@@ -182,26 +211,30 @@ namespace Player
                 ProcessAction(action);
             }
 
-            if (dashTimer > 0f)
+            if (replayManager.GetActionAtTime(currentTargetTime, out PlayerAction latestAction))
             {
-                dashTimer -= Time.fixedDeltaTime;
-                rb.linearVelocity = new Vector2(dashDirection * dashSpeed, 0f);
-            }
-            else if (replayManager.GetActionAtTime(currentTargetTime, out PlayerAction latestAction))
-            {
-                if (latestAction.isFacingRight != isFacingRight)
+                float finalMoveX = latestAction.moveX;
+                bool finalFacingRight = latestAction.isFacingRight;
+                
+                if (mirrorMode)
                 {
-                    isFacingRight = latestAction.isFacingRight;
+                    finalMoveX = -latestAction.moveX;
+                    finalFacingRight = !latestAction.isFacingRight;
+                }
+
+                if (finalFacingRight != isFacingRight)
+                {
+                    isFacingRight = finalFacingRight;
                     Vector3 scale = transform.localScale;
                     scale.x = isFacingRight ? Mathf.Abs(scale.x) : -Mathf.Abs(scale.x);
                     transform.localScale = scale;
                 }
 
-                bool canRun = latestAction.isRunning && Mathf.Abs(latestAction.moveX) > 0.01f;
+                bool canRun = latestAction.isRunning && Mathf.Abs(finalMoveX) > 0.01f;
                 float currentSpeed = canRun ? runSpeed : walkSpeed;
-                rb.linearVelocity = new Vector2(latestAction.moveX * currentSpeed, rb.linearVelocity.y);
+                rb.linearVelocity = new Vector2(finalMoveX * currentSpeed, rb.linearVelocity.y);
 
-                float animSpeed = Mathf.Abs(latestAction.moveX) > 0.01f ? (canRun ? 2f : 1f) : 0f;
+                float animSpeed = Mathf.Abs(finalMoveX) > 0.01f ? (canRun ? 2f : 1f) : 0f;
                 anim.SetFloat("Speed", isGrounded ? animSpeed : 0f);
 
                 ApplyCustomGravity(latestAction.jumpHeld);
@@ -237,7 +270,6 @@ namespace Player
         public void ToggleAnchor()
         {
             EnsurePlayerStatusReference();
-
             if (playerStatus == null) return;
 
             if (!isAnchored && !isFallingToAnchor)
@@ -263,22 +295,39 @@ namespace Player
             }
             else
             {
+                bool playerFacingRight = true;
+                if (playerStatus != null)
+                {
+                    playerFacingRight = playerStatus.transform.localScale.x > 0;
+                }
+
+                bool currentlyFacingEachOther = (playerFacingRight != isFacingRight);
+                mirrorMode = currentlyFacingEachOther;
+
                 isAnchored = false;
                 isFallingToAnchor = false;
                 rb.bodyType = RigidbodyType2D.Dynamic;
                 lastProcessedTime = Time.time - delaySeconds;
+
                 if (sr != null) sr.color = originalColor;
             }
         }
 
         private void ProcessAction(PlayerAction action)
         {
+            float moveX = mirrorMode ? -action.moveX : action.moveX;
+            bool facingRight = mirrorMode ? !action.isFacingRight : action.isFacingRight;
+
             if (action.dashPressed)
             {
                 dashTimer = dashDuration;
-                dashDirection = Mathf.Abs(action.moveX) > 0.01f
-                    ? Mathf.Sign(action.moveX)
-                    : (action.isFacingRight ? 1f : -1f);
+                dashDirection = Mathf.Abs(moveX) > 0.01f ? Mathf.Sign(moveX) : (facingRight ? 1f : -1f);
+                
+                if (dashLayer != -1)
+                {
+                    gameObject.layer = dashLayer;
+                }
+
                 anim.SetTrigger("Dash");
                 return;
             }
@@ -294,7 +343,7 @@ namespace Player
                 currentAttackDamage = 20f;
                 if (!isGrounded && action.moveY < -0.3f)
                 {
-                    anim.SetTrigger(isFacingRight ? "Attack1_Down" : "Attack1_DownLeft");
+                    anim.SetTrigger(facingRight ? "Attack1_Down" : "Attack1_DownLeft");
                     rb.linearVelocity = new Vector2(rb.linearVelocity.x, pogoForce);
                 }
                 else
@@ -314,7 +363,7 @@ namespace Player
             }
         }
 
-#region IDamageable Implementation
+        #region IDamageable Implementation
 
         public void TakeDamage(float damage)
         {
@@ -325,6 +374,12 @@ namespace Player
             if (playerStatus != null && !playerStatus.IsDead)
             {
                 playerStatus.TakeDamage(transferredDamage);
+            }
+            
+            Combat.Knockback.Apply(rb, transform.position + (isFacingRight ? Vector3.right : Vector3.left), shadowKnockbackForce, 0.5f);
+            if (CameraShake.Instance != null)
+            {
+                CameraShake.Instance.Shake(0.05f, 0.05f);
             }
 
             if (sr != null)
@@ -343,7 +398,7 @@ namespace Player
             sr.color = (isAnchored || isFallingToAnchor) ? anchorColor : originalColor;
         }
 
-#endregion
+        #endregion
 
         public void TriggerPlayerAttackHitbox()
         {
